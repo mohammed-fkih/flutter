@@ -47,6 +47,8 @@ const double _kMinimumWidth = 112.0;
 
 const double _kDefaultHorizontalPadding = 12.0;
 
+const double _kLeadingIconToInputPadding = 4.0;
+
 /// Defines a [DropdownMenu] menu button that represents one item view in the menu.
 ///
 /// See also:
@@ -100,6 +102,18 @@ class DropdownMenuEntry<T> {
   ///
   /// Null by default.
   final ButtonStyle? style;
+}
+
+/// Defines the behavior for closing the dropdown menu when an item is selected.
+enum DropdownMenuCloseBehavior {
+  /// Closes all open menus in the widget tree.
+  all,
+
+  /// Closes only the current dropdown menu.
+  self,
+
+  /// Does not close any menus.
+  none,
 }
 
 /// A dropdown menu that can be opened from a [TextField]. The selected
@@ -172,6 +186,7 @@ class DropdownMenu<T> extends StatefulWidget {
     this.alignmentOffset,
     required this.dropdownMenuEntries,
     this.inputFormatters,
+    this.closeBehavior = DropdownMenuCloseBehavior.all,
   }) : assert(filterCallback == null || enableFilter);
 
   /// Determine if the [DropdownMenu] is enabled.
@@ -473,6 +488,19 @@ class DropdownMenu<T> extends StatefulWidget {
   /// {@macro flutter.material.MenuAnchor.alignmentOffset}
   final Offset? alignmentOffset;
 
+  /// Defines the behavior for closing the dropdown menu when an item is selected.
+  ///
+  /// The close behavior can be set to:
+  /// * [DropdownMenuCloseBehavior.all]: Closes all open menus in the widget tree.
+  /// * [DropdownMenuCloseBehavior.self]: Closes only the current dropdown menu.
+  /// * [DropdownMenuCloseBehavior.none]: Does not close any menus.
+  ///
+  /// This property allows fine-grained control over the menu's closing behavior,
+  /// which can be useful for creating nested or complex menu structures.
+  ///
+  /// Defaults to [DropdownMenuCloseBehavior.all].
+  final DropdownMenuCloseBehavior closeBehavior;
+
   @override
   State<DropdownMenu<T>> createState() => _DropdownMenuState<T>();
 }
@@ -490,6 +518,7 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
   double? leadingPadding;
   bool _menuHasEnabledItem = false;
   TextEditingController? _localTextEditingController;
+  final FocusNode _internalFocudeNode = FocusNode();
 
   TextEditingValue get _initialTextEditingValue {
     for (final DropdownMenuEntry<T> entry in filteredEntries) {
@@ -526,6 +555,7 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
       _localTextEditingController?.dispose();
       _localTextEditingController = null;
     }
+    _internalFocudeNode.dispose();
     super.dispose();
   }
 
@@ -584,7 +614,12 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
         return;
       }
       setState(() {
-        leadingPadding = getWidth(_leadingKey);
+        final double? leadingWidgetWidth = getWidth(_leadingKey);
+        if (leadingWidgetWidth != null) {
+          leadingPadding = leadingWidgetWidth + _kLeadingIconToInputPadding;
+        } else {
+          leadingPadding = leadingWidgetWidth;
+        }
       });
     }, debugLabel: 'DropdownMenu.refreshLeadingPadding');
   }
@@ -648,6 +683,7 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
     TextDirection textDirection, {
     int? focusedIndex,
     bool enableScrollToHighlight = true,
+    bool excludeSemantics = false,
   }) {
     final List<Widget> result = <Widget>[];
     for (int i = 0; i < filteredEntries.length; i++) {
@@ -659,7 +695,7 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
       // menu entry have leading icons, the menu entry should remove the extra
       // paddings so its leading icon will be aligned with the leading icon of
       // the text field.
-      final double padding = entry.leadingIcon == null ? (leadingPadding ?? _kDefaultHorizontalPadding) : _kDefaultHorizontalPadding;
+      final double padding = entry.leadingIcon == null ? (leadingPadding ?? _kDefaultHorizontalPadding) : (_kDefaultHorizontalPadding + _kLeadingIconToInputPadding);
       ButtonStyle effectiveStyle = entry.style ?? switch (textDirection) {
         TextDirection.rtl => MenuItemButton.styleFrom(padding: EdgeInsets.only(left: _kDefaultHorizontalPadding, right: padding)),
         TextDirection.ltr => MenuItemButton.styleFrom(padding: EdgeInsets.only(left: padding, right: _kDefaultHorizontalPadding)),
@@ -717,24 +753,31 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
         );
       }
 
-      final Widget menuItemButton = MenuItemButton(
-        key: enableScrollToHighlight ? buttonItemKeys[i] : null,
-        style: effectiveStyle,
-        leadingIcon: entry.leadingIcon,
-        trailingIcon: entry.trailingIcon,
-        onPressed: entry.enabled && widget.enabled
-          ? () {
-              _localTextEditingController?.value = TextEditingValue(
-                text: entry.label,
-                selection: TextSelection.collapsed(offset: entry.label.length),
-              );
-              currentHighlight = widget.enableSearch ? i : null;
-              widget.onSelected?.call(entry.value);
-              _enableFilter = false;
-            }
-          : null,
-        requestFocusOnHover: false,
-        child: label,
+      final Widget menuItemButton = ExcludeSemantics(
+        excluding: excludeSemantics,
+        child: MenuItemButton(
+          key: enableScrollToHighlight ? buttonItemKeys[i] : null,
+          style: effectiveStyle,
+          leadingIcon: entry.leadingIcon,
+          trailingIcon: entry.trailingIcon,
+          closeOnActivate: widget.closeBehavior == DropdownMenuCloseBehavior.all,
+          onPressed: entry.enabled && widget.enabled
+            ? () {
+                _localTextEditingController?.value = TextEditingValue(
+                  text: entry.label,
+                  selection: TextSelection.collapsed(offset: entry.label.length),
+                );
+                currentHighlight = widget.enableSearch ? i : null;
+                widget.onSelected?.call(entry.value);
+                _enableFilter = false;
+                if (widget.closeBehavior == DropdownMenuCloseBehavior.self) {
+                  _controller.close();
+                }
+              }
+            : null,
+          requestFocusOnHover: false,
+          child: label,
+        ),
       );
       result.add(menuItemButton);
     }
@@ -791,14 +834,42 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
         _enableFilter = false;
       }
       controller.open();
+      _internalFocudeNode.requestFocus();
     }
     setState(() {});
+  }
+
+  void _handleEditingComplete() {
+    if (currentHighlight != null) {
+      final DropdownMenuEntry<T> entry = filteredEntries[currentHighlight!];
+      if (entry.enabled) {
+        _localTextEditingController?.value = TextEditingValue(
+          text: entry.label,
+          selection: TextSelection.collapsed(offset: entry.label.length),
+        );
+        widget.onSelected?.call(entry.value);
+      }
+    } else {
+      if (_controller.isOpen) {
+        widget.onSelected?.call(null);
+      }
+    }
+    if (!widget.enableSearch) {
+      currentHighlight = null;
+    }
+    _controller.close();
   }
 
   @override
   Widget build(BuildContext context) {
     final TextDirection textDirection = Directionality.of(context);
-    _initialMenu ??= _buildButtons(widget.dropdownMenuEntries, textDirection, enableScrollToHighlight: false);
+    _initialMenu ??= _buildButtons(
+      widget.dropdownMenuEntries,
+      textDirection,
+      enableScrollToHighlight: false,
+      // The _initialMenu is invisible, we should not add semantics nodes to it
+      excludeSemantics: true,
+    );
     final DropdownMenuThemeData theme = DropdownMenuTheme.of(context);
     final DropdownMenuThemeData defaults = _DropdownMenuDefaultsM3(context);
 
@@ -855,7 +926,6 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
       controller: _controller,
       menuChildren: menu,
       crossAxisUnconstrained: false,
-      layerLink: LayerLink(),
       builder: (BuildContext context, MenuController controller, Widget? child) {
         assert(_initialMenu != null);
         final Widget trailingButton = Padding(
@@ -888,24 +958,7 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
           textAlignVertical: TextAlignVertical.center,
           style: effectiveTextStyle,
           controller: _localTextEditingController,
-          onEditingComplete: () {
-            if (currentHighlight != null) {
-              final DropdownMenuEntry<T> entry = filteredEntries[currentHighlight!];
-              if (entry.enabled) {
-                _localTextEditingController?.value = TextEditingValue(
-                  text: entry.label,
-                  selection: TextSelection.collapsed(offset: entry.label.length),
-                );
-                widget.onSelected?.call(entry.value);
-              }
-            } else {
-              widget.onSelected?.call(null);
-            }
-            if (!widget.enableSearch) {
-              currentHighlight = null;
-            }
-            controller.close();
-          },
+          onEditingComplete: _handleEditingComplete,
           onTap: !widget.enabled ? null : () {
             handlePressed(controller);
           },
@@ -931,12 +984,20 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
           ).applyDefaults(effectiveInputDecorationTheme)
         );
 
-        if (widget.expandedInsets != null) {
-          // If [expandedInsets] is not null, the width of the text field should depend
-          // on its parent width. So we don't need to use `_DropdownMenuBody` to
-          // calculate the children's width.
-          return textField;
-        }
+        // If [expandedInsets] is not null, the width of the text field should depend
+        // on its parent width. So we don't need to use `_DropdownMenuBody` to
+        // calculate the children's width.
+        final Widget body = widget.expandedInsets != null
+          ? textField
+          : _DropdownMenuBody(
+              width: widget.width,
+              children: <Widget>[
+                textField,
+                ..._initialMenu!.map((Widget item) => ExcludeFocus(excluding: !controller.isOpen, child: item)),
+                trailingButton,
+                leadingButton,
+              ],
+            );
 
         return Shortcuts(
           shortcuts: const <ShortcutActivator, Intent>{
@@ -945,15 +1006,7 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
             SingleActivator(LogicalKeyboardKey.arrowUp): _ArrowUpIntent(),
             SingleActivator(LogicalKeyboardKey.arrowDown): _ArrowDownIntent(),
           },
-          child: _DropdownMenuBody(
-            width: widget.width,
-            children: <Widget>[
-              textField,
-              ..._initialMenu!.map((Widget item) => ExcludeFocus(excluding: !controller.isOpen, child: item)),
-              trailingButton,
-              leadingButton,
-            ],
-          ),
+          child: body,
         );
       },
     );
@@ -976,6 +1029,17 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
       );
     }
 
+    // Wrap the menu anchor with an Align to narrow down the constraints.
+    // Without this Align, when tight constraints are applied to DropdownMenu,
+    // the menu will appear below these constraints instead of below the
+    // text field.
+    menuAnchor = Align(
+      alignment: AlignmentDirectional.topStart,
+      widthFactor: 1.0,
+      heightFactor: 1.0,
+      child: menuAnchor,
+    );
+
     return Actions(
       actions: <Type, Action<Intent>>{
         _ArrowUpIntent: CallbackAction<_ArrowUpIntent>(
@@ -984,8 +1048,28 @@ class _DropdownMenuState<T> extends State<DropdownMenu<T>> {
         _ArrowDownIntent: CallbackAction<_ArrowDownIntent>(
           onInvoke: handleDownKeyInvoke,
         ),
+        _EnterIntent: CallbackAction<_EnterIntent>(
+          onInvoke: (_) => _handleEditingComplete(),
+        ),
       },
-      child: menuAnchor,
+      child: Stack(
+        children: <Widget>[
+          // Handling keyboard navigation when the Textfield has no focus.
+          Shortcuts(
+            shortcuts: const <ShortcutActivator, Intent>{
+              SingleActivator(LogicalKeyboardKey.arrowUp): _ArrowUpIntent(),
+              SingleActivator(LogicalKeyboardKey.arrowDown): _ArrowDownIntent(),
+              SingleActivator(LogicalKeyboardKey.enter): _EnterIntent(),
+            },
+            child: Focus(
+              focusNode: _internalFocudeNode,
+              skipTraversal: true,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+          menuAnchor,
+        ],
+      ),
     );
   }
 }
@@ -1003,6 +1087,10 @@ class _ArrowUpIntent extends Intent {
 
 class _ArrowDownIntent extends Intent {
   const _ArrowDownIntent();
+}
+
+class _EnterIntent extends Intent {
+  const _EnterIntent();
 }
 
 class _DropdownMenuBody extends MultiChildRenderObjectWidget {
